@@ -34,7 +34,8 @@ case "${1:-}" in
 esac
 
 echo "1/4 Python environment"
-[ -x .venv/bin/python ] || python3 -m venv .venv
+# A venv breaks if the folder moves; rebuild it when it no longer runs.
+.venv/bin/python -c "" 2>/dev/null || { rm -rf .venv; python3 -m venv .venv; }
 .venv/bin/pip install -q -r requirements.txt
 .venv/bin/python -m playwright install chromium >/dev/null
 
