@@ -18,7 +18,9 @@ import datetime as dt
 import json
 import time
 
-from playwright.sync_api import Page, TimeoutError as PWTimeout, sync_playwright
+import pathlib
+
+from playwright.sync_api import Error as PWError, Page, sync_playwright
 
 SITE = "https://clubwyndham.wyndhamdestinations.com"
 LOGIN_URL = f"{SITE}/us/en/login"
@@ -44,6 +46,12 @@ async ({url, headers, body}) => {
 }
 """
 
+# Signs that Okta is asking for a second factor (texted code).
+_MFA_SELECTORS = ['input[name="credentials.passcode"]', 'input[name="answer"]', 'input[name="passCode"]',
+                  '[data-se="factor-sms"]', '[data-se="phone_number"]', '[data-se="okta_verify-push"]']
+_MFA_PHRASES = ("verification code", "verify with", "enter code", "send code", "receive a code",
+                "we sent a code", "security method")
+
 # Headers the browser adds itself; never replay these from fetch().
 _SKIP = {"host", "content-length", "cookie", "origin", "referer", "user-agent",
          "connection", "accept-encoding", "accept-language"}
@@ -68,33 +76,88 @@ class WyndhamClient:
         self._party_id: str | None = None
 
     # -- session ---------------------------------------------------------
-    def _on_login_page(self, page: Page) -> bool:
-        return "/login" in page.url or page.locator("input[name=password]").count() > 0
+    def _state(self, page: Page) -> str:
+        """Classify the current page: calendar | login | mfa | error | loading."""
+        if "/login" not in page.url and page.locator("#suiteType").count() > 0:
+            return "calendar"
+        if page.locator(", ".join(_MFA_SELECTORS)).count() > 0:
+            return "mfa"
+        try:
+            body = page.inner_text("body", timeout=2_000).lower()
+        except PWError:
+            body = ""
+        if any(p in body for p in _MFA_PHRASES):
+            return "mfa"
+        if page.locator(".o-form-error-container:not(:empty), .okta-form-infobox-error").count() > 0:
+            return "error"
+        if page.locator("input[name=password]").count() > 0:
+            return "login"
+        return "loading"
+
+    def _wait_state(self, page: Page, want: set[str], timeout_s: int) -> str:
+        deadline = time.time() + timeout_s
+        state = "loading"
+        while time.time() < deadline:
+            state = self._state(page)
+            if state in want:
+                return state
+            page.wait_for_timeout(1_000)
+        return state
 
     def _login(self, page: Page):
         if not (self.username and self.password):
             raise WyndhamError("Session expired and WYNDHAM_USERNAME / WYNDHAM_PASSWORD are not set.")
-        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        print("Signing in to Club Wyndham...")
         page.locator("input[name=username]").fill(self.username)
         page.locator("input[name=password]").fill(self.password)
         page.locator("input[name=password]").press("Enter")
-        try:
-            page.wait_for_url("**/owner/**", timeout=45_000)
-        except PWTimeout:
-            body = page.inner_text("body").lower()
-            if any(w in body for w in ("verification", "verify", "code", "sms", "text message")):
-                raise MfaRequired(
-                    "Club Wyndham asked for a verification code. Run bootstrap_login.py on your Mac "
-                    "to sign in once (check 'don't ask again'), then update the WYNDHAM_STATE secret."
-                )
-            raise WyndhamError(f"Login did not reach the owner area (stuck at {page.url}).")
+        # Leave the login form, then land somewhere definite.
+        page.wait_for_timeout(3_000)
+        state = self._wait_state(page, {"mfa", "error", "calendar"}, 60)
+        if state == "loading" and "/owner/" in page.url:
+            state = "ok"
+        if state == "mfa":
+            raise MfaRequired(
+                "Club Wyndham asked for a verification code, so this computer/server isn't trusted yet. "
+                "Run bootstrap_login.py on your Mac (tick 'don't ask again'), then "
+                "`gh secret set WYNDHAM_STATE < state.secret`."
+            )
+        if state == "error":
+            msg = page.locator(".o-form-error-container, .okta-form-infobox-error").first.inner_text()
+            raise WyndhamError(f"Sign-in was rejected: {msg.strip()[:200]}")
+        if state not in ("calendar", "ok") and "/owner/" not in page.url:
+            raise WyndhamError(f"Sign-in did not reach the owner area (stuck at {page.url}, state={state}).")
+
+    def _open_calendar(self, page: Page, product_id: str):
+        page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
+        state = self._wait_state(page, {"calendar", "login", "mfa"}, 60)
+        if state == "login":
+            self._login(page)
+            page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
+            state = self._wait_state(page, {"calendar", "login", "mfa"}, 60)
+        if state != "calendar":
+            raise WyndhamError(f"Calendar page did not load (at {page.url}, state={state}).")
 
     def _capture_headers(self, page: Page, product_id: str):
-        """Load a calendar page and grab the auth headers from the site's own API call."""
-        with page.expect_request(lambda r: "/resorts/availability-dates" in r.url and r.method == "POST",
-                                 timeout=60_000) as req_info:
-            page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
-        req = req_info.value
+        """Get the auth headers the calendar page attaches to its own availability request."""
+        captured: list = []
+        page.on("request", lambda r: captured.append(r) if (
+            "/resorts/availability-dates" in r.url and r.method == "POST") else None)
+        self._open_calendar(page, product_id)
+        for _ in range(15):
+            if captured:
+                break
+            page.wait_for_timeout(1_000)
+        if not captured:
+            # The page doesn't always query on load; picking a suite type makes it.
+            page.select_option("#suiteType", label="1 Bedroom")
+            for _ in range(30):
+                if captured:
+                    break
+                page.wait_for_timeout(1_000)
+        if not captured:
+            raise WyndhamError("Calendar page never requested availability; can't capture API credentials.")
+        req = captured[-1]
         # all_headers() includes auth headers that .headers may omit.
         self._headers = {k: v for k, v in req.all_headers().items()
                          if k.lower() not in _SKIP and not k.startswith(":")}
@@ -104,6 +167,18 @@ class WyndhamClient:
             self._party_id = ""
         if not self._party_id or not any(k.lower() == "authorization" for k in self._headers):
             raise WyndhamError("Could not capture API credentials from the calendar page.")
+        print("Signed in; captured API credentials.")
+
+    def _dump(self, page: Page, tag: str):
+        """Save what the browser was showing, for the workflow's debug artifact."""
+        d = pathlib.Path("debug")
+        d.mkdir(exist_ok=True)
+        try:
+            page.screenshot(path=str(d / f"{tag}.png"), full_page=True)
+            (d / f"{tag}.html").write_text(page.content())
+        except PWError:
+            pass
+        print(f"[debug] {tag}: url={page.url} title={page.title()!r} (screenshot saved to debug/)")
 
     # -- data ------------------------------------------------------------
     def _fetch_window(self, page: Page, product_id: str, s: dt.date, e: dt.date) -> list[dict]:
@@ -132,11 +207,13 @@ class WyndhamClient:
                 ctx = browser.new_context()
             page = ctx.new_page()
             first_pid = next(iter(resorts.values()))
-            page.goto(CALENDAR_URL.format(pid=first_pid), wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle", timeout=60_000)
-            if self._on_login_page(page):
-                self._login(page)
-            self._capture_headers(page, first_pid)
+            try:
+                self._capture_headers(page, first_pid)
+            except WyndhamError:
+                self._dump(page, "signin-failure")
+                ctx.storage_state(path=self.state_path)
+                browser.close()
+                raise
 
             for key, pid in resorts.items():
                 nights: dict[str, dict[str, int]] = {}

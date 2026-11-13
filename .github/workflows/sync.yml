@@ -53,6 +53,15 @@ jobs:
           FEED_TOKEN: ${{ secrets.FEED_TOKEN }}
         run: python sync.py --out public
 
+      - name: Upload debug screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Save refreshed session
         if: always() && hashFiles('state.json') != ''
         uses: actions/cache/save@v4
