@@ -96,6 +96,8 @@ class WyndhamClient:
             return "error"
         if page.locator("input[name=password]").count() > 0:
             return "login"
+        if "log out" in body:
+            return "signed_in"
         return "loading"
 
     def _wait_state(self, page: Page, want: set[str], timeout_s: int) -> str:
@@ -117,9 +119,7 @@ class WyndhamClient:
         page.locator("input[name=password]").press("Enter")
         # Leave the login form, then land somewhere definite.
         page.wait_for_timeout(3_000)
-        state = self._wait_state(page, {"mfa", "error", "calendar"}, 60)
-        if state == "loading" and "/owner/" in page.url:
-            state = "ok"
+        state = self._wait_state(page, {"mfa", "error", "calendar", "signed_in"}, 60)
         if state == "mfa":
             raise MfaRequired(
                 "Club Wyndham asked for a verification code, so this computer/server isn't trusted yet. "
@@ -129,18 +129,25 @@ class WyndhamClient:
         if state == "error":
             msg = page.locator(".o-form-error-container, .okta-form-infobox-error").first.inner_text()
             raise WyndhamError(f"Sign-in was rejected: {msg.strip()[:200]}")
-        if state not in ("calendar", "ok") and "/owner/" not in page.url:
-            raise WyndhamError(f"Sign-in did not reach the owner area (stuck at {page.url}, state={state}).")
+        if state not in ("calendar", "signed_in"):
+            raise WyndhamError(f"Sign-in did not complete (at {page.url}, state={state}).")
+        print("Signed in.")
 
     def _open_calendar(self, page: Page, product_id: str):
-        page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
-        state = self._wait_state(page, {"calendar", "login", "mfa"}, 60)
+        # Sessions last about an hour and signed-out owner pages don't always
+        # redirect, so start every run at the login page.
+        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        state = self._wait_state(page, {"login", "signed_in", "mfa", "calendar"}, 60)
         if state == "login":
             self._login(page)
-            page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
-            state = self._wait_state(page, {"calendar", "login", "mfa"}, 60)
+        elif state == "mfa":
+            raise MfaRequired("Club Wyndham asked for a verification code before sign-in.")
+        elif state not in ("signed_in", "calendar"):
+            raise WyndhamError(f"Login page did not load (at {page.url}, state={state}).")
+        page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
+        state = self._wait_state(page, {"calendar", "login", "mfa"}, 60)
         if state != "calendar":
-            raise WyndhamError(f"Calendar page did not load (at {page.url}, state={state}).")
+            raise WyndhamError(f"Calendar page did not load after sign-in (at {page.url}, state={state}).")
 
     def _capture_headers(self, page: Page, product_id: str):
         """Get the auth headers the calendar page attaches to its own availability request."""
