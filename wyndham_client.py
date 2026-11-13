@@ -65,9 +65,11 @@ _MFA_SELECTORS = ['input[name="credentials.passcode"]', 'input[name="answer"]', 
 _MFA_PHRASES = ("verification code", "verify with", "enter code", "send code", "receive a code",
                 "we sent a code", "security method")
 
-# Headers the browser adds itself; never replay these from fetch().
-_SKIP = {"host", "content-length", "cookie", "origin", "referer", "user-agent",
-         "connection", "accept-encoding", "accept-language"}
+# Replay only the headers the site's own code sets (auth + X-* context). Copying
+# browser-added ones (sec-ch-*, priority, ...) makes the cross-origin call fail CORS.
+def _app_header(name: str) -> bool:
+    n = name.lower()
+    return n.startswith("x-") or n in ("authorization", "content-type", "accept")
 
 
 def _windows(start: dt.date, end: dt.date):
@@ -213,8 +215,7 @@ class WyndhamClient:
             raise WyndhamError("Calendar page never requested availability; can't capture API credentials.")
         req = captured[-1]
         # all_headers() includes auth headers that .headers may omit.
-        self._headers = {k: v for k, v in req.all_headers().items()
-                         if k.lower() not in _SKIP and not k.startswith(":")}
+        self._headers = {k: v for k, v in req.all_headers().items() if _app_header(k)}
         try:
             self._party_id = str(json.loads(req.post_data or "{}").get("partyId") or "")
         except json.JSONDecodeError:
@@ -249,7 +250,12 @@ class WyndhamClient:
                 "partyId": self._party_id, "consumerTypes": [self.consumer_type]}
         last = None
         for attempt in range(3):
-            res = page.evaluate(_FETCH_JS, {"url": API, "headers": self._headers, "body": body})
+            try:
+                res = page.evaluate(_FETCH_JS, {"url": API, "headers": self._headers, "body": body})
+            except PWError as e:
+                last = f"browser fetch error: {str(e).splitlines()[0]}"
+                time.sleep(2 * (attempt + 1))
+                continue
             if res["status"] == 200:
                 data = json.loads(res["text"])
                 return data.get("calendarDays") or []
