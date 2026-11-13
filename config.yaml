@@ -1,0 +1,91 @@
+# Wyndham -> Airbnb availability sync configuration
+#
+# Each Airbnb listing gets its own .ics feed. A night is left OPEN on Airbnb
+# only when Club Wyndham shows at least `min_available` units for that night
+# across the listed suite labels. Every other night is published as BLOCKED.
+#
+# Suite labels must match Club Wyndham's labels exactly (case-insensitive).
+# Labels seen on 2026-11-12:
+#   Bonnet Creek:     1/2/3 Bedroom Deluxe, 1-4 Bedroom Presidential,
+#                     1-4 Bedroom Presidential (Presidential Reserve)
+#   Midtown 45:       Studio, Hotel Room, Hotel Room Double, 1 Bedroom Deluxe,
+#                     1/2 Bedroom Presidential, 1/2 Bedroom Presidential (Presidential Reserve)
+#   Resort at Avon:   1/2/3 Bedroom Presidential (Presidential Reserve)  (no studios)
+#   La Belle Maison:  Studio, Studio Presidential, 1 Bedroom, 1 Bedroom Presidential,
+#                     2 Bedroom, 2 Bedroom Presidential, 2 Bedroom (Presidential) Lockoff
+
+timezone: America/New_York
+feed_horizon_days: 730          # Airbnb imports up to 2 years; nights past Wyndham's window are blocked
+consumer_type: "REF|CLUB WYNDHAM PLUS"
+
+resorts:
+  bonnet-creek:    { name: Club Wyndham Bonnet Creek,     product_id: "PI|R000000000045" }
+  midtown-45:      { name: Club Wyndham Midtown 45,       product_id: "PI|R000000000167" }
+  avon:            { name: Club Wyndham Resort at Avon,   product_id: "PI|R000000000171" }
+  la-belle-maison: { name: Club Wyndham La Belle Maison,  product_id: "PI|R000000000062" }
+
+listings:
+  - slug: midtown45-2br-presidential-1
+    airbnb_title: "2-Bedroom Presidential - Wyndham Midtown 45"
+    resort: midtown-45
+    labels: ["2 Bedroom Presidential", "2 Bedroom Presidential (Presidential Reserve)"]
+
+  - slug: midtown45-2br-presidential-2
+    airbnb_title: "2-Bedroom Presidential 2 - Wyndham Midtown 45"
+    resort: midtown-45
+    labels: ["2 Bedroom Presidential", "2 Bedroom Presidential (Presidential Reserve)"]
+
+  - slug: midtown45-studio-deluxe-1
+    airbnb_title: "Studio Deluxe 1 - Wyndham Midtown 45"
+    resort: midtown-45
+    labels: ["Studio"]          # Midtown 45 has no "Studio Deluxe" label
+
+  - slug: midtown45-studio-deluxe-2
+    airbnb_title: "Studio Deluxe 2- Wyndham Midtown 45"
+    resort: midtown-45
+    labels: ["Studio"]
+
+  - slug: avon-studio-presidential
+    airbnb_title: "Studio Presidential - Wyndham Avon (Beaver Creek)"
+    resort: avon
+    labels: []                  # No studio inventory at Avon -> every night blocked
+    allow_no_inventory: true
+
+  - slug: avon-1br-presidential
+    airbnb_title: "1 Bdrm Presidential - Wyndham Avon (Beaver Creek)"
+    resort: avon
+    labels: ["1 Bedroom Presidential (Presidential Reserve)", "1 Bedroom Presidential"]
+
+  - slug: bonnet-creek-1br-deluxe
+    airbnb_title: "1 Bedroom Deluxe - Wyndham Bonnet Creek"
+    resort: bonnet-creek
+    labels: ["1 Bedroom Deluxe"]
+
+  - slug: midtown45-1br-presidential
+    airbnb_title: "1 Bedroom Presidential - Wyndham Midtown 45"
+    resort: midtown-45
+    labels: ["1 Bedroom Presidential", "1 Bedroom Presidential (Presidential Reserve)"]
+
+  - slug: avon-2br-presidential
+    airbnb_title: "2 Bdrm Presidential - Wyndham Avon (Beaver Creek)"
+    resort: avon
+    labels: ["2 Bedroom Presidential (Presidential Reserve)", "2 Bedroom Presidential"]
+
+  - slug: bonnet-creek-2br-deluxe
+    airbnb_title: "2 Bedroom Deluxe - Wyndham Bonnet Creek"
+    resort: bonnet-creek
+    labels: ["2 Bedroom Deluxe"]
+
+  - slug: bonnet-creek-3br-deluxe
+    airbnb_title: "3 Bedroom Deluxe - Wyndham Bonnet Creek"
+    resort: bonnet-creek
+    labels: ["3 Bedroom Deluxe"]
+
+  - slug: la-belle-maison-studio-presidential
+    airbnb_title: "Studio Presidential - Wyndham La Belle Maison"
+    resort: la-belle-maison
+    labels: ["Studio Presidential"]
+
+# Optional per-listing setting:
+#   min_available: 2   -> only leave a night open when Wyndham shows 2+ units
+#                         (useful for the paired Midtown 45 listings)

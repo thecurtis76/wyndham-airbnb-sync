@@ -1,0 +1,5 @@
+state.json
+public/
+*.raw.json
+__pycache__/
+.venv/

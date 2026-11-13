@@ -1,0 +1,12 @@
+# Manual blocks, applied on top of Wyndham availability.
+# Use for guest-restricted dates (Owner Priority Reservations policy),
+# personal use, maintenance, etc. End dates are inclusive nights.
+#
+# listing: "*" applies to every listing; a resort key (e.g. bonnet-creek)
+# applies to all listings at that resort; otherwise use a listing slug.
+
+blocks: []
+#  - listing: bonnet-creek
+#    start: 2026-12-19
+#    end: 2027-01-02
+#    reason: Guest certificates restricted over holidays
