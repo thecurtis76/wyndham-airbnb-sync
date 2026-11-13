@@ -46,6 +46,9 @@ async ({url, headers, body}) => {
 }
 """
 
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36")
+
 # Signs that Okta is asking for a second factor (texted code).
 _MFA_SELECTORS = ['input[name="credentials.passcode"]', 'input[name="answer"]', 'input[name="passCode"]',
                   '[data-se="factor-sms"]', '[data-se="phone_number"]', '[data-se="okta_verify-push"]']
@@ -74,6 +77,7 @@ class WyndhamClient:
         self.headless = headless
         self._headers: dict[str, str] | None = None
         self._party_id: str | None = None
+        self._log: list[str] = []
 
     # -- session ---------------------------------------------------------
     def _state(self, page: Page) -> str:
@@ -179,6 +183,15 @@ class WyndhamClient:
         except PWError:
             pass
         print(f"[debug] {tag}: url={page.url} title={page.title()!r} (screenshot saved to debug/)")
+        try:
+            text = " ".join(page.inner_text("body", timeout=3_000).split())
+        except PWError:
+            text = "(could not read page text)"
+        print(f"[debug] page text: {text[:800]}")
+        print(f"[debug] user agent: {page.evaluate('navigator.userAgent')}")
+        print(f"[debug] last {min(len(self._log), 40)} errors/failed requests:")
+        for line in self._log[-40:]:
+            print(f"[debug]   {line}")
 
     # -- data ------------------------------------------------------------
     def _fetch_window(self, page: Page, product_id: str, s: dt.date, e: dt.date) -> list[dict]:
@@ -200,12 +213,24 @@ class WyndhamClient:
         """resorts: {key: product_id}. Returns {key: {date: {label: units}}}."""
         out: dict[str, dict[str, dict[str, int]]] = {}
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=self.headless)
-            try:
-                ctx = browser.new_context(storage_state=self.state_path)
-            except FileNotFoundError:
-                ctx = browser.new_context()
+            # channel="chromium" = full Chrome in new-headless mode (not the stripped
+            # headless shell), plus a normal user agent: the site's bot protection
+            # stalls pages for "HeadlessChrome".
+            browser = p.chromium.launch(headless=self.headless, channel="chromium",
+                                        args=["--disable-blink-features=AutomationControlled"])
+            major = browser.version.split(".")[0]
+            opts = dict(user_agent=_UA.format(major=major), locale="en-US", timezone_id="America/New_York",
+                        viewport={"width": 1440, "height": 900})
+            if pathlib.Path(self.state_path).exists():
+                opts["storage_state"] = self.state_path
+            ctx = browser.new_context(**opts)
+            ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = ctx.new_page()
+            page.on("console", lambda m: m.type == "error" and self._log.append(f"console: {m.text[:200]}"))
+            page.on("response", lambda r: r.status >= 400 and self._log.append(
+                f"HTTP {r.status} {r.request.method} {r.url.split('?')[0][:150]}"))
+            page.on("requestfailed", lambda r: self._log.append(
+                f"FAILED {r.method} {r.url.split('?')[0][:150]} ({r.failure})"))
             first_pid = next(iter(resorts.values()))
             try:
                 self._capture_headers(page, first_pid)

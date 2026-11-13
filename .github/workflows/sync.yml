@@ -29,17 +29,9 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m playwright install --with-deps chromium
 
-      # Reuse the session saved by the previous run (keeps cookies fresh).
-      - name: Restore saved Wyndham session
-        uses: actions/cache/restore@v4
-        with:
-          path: state.json
-          key: wyndham-state-${{ github.run_id }}
-          restore-keys: wyndham-state-
-
-      # First run, or cache evicted: fall back to the session you uploaded.
-      - name: Seed session from secret
-        if: hashFiles('state.json') == ''
+      # Wyndham sessions expire within ~1 hour; the saved session mainly carries the
+      # "don't ask again" device approval. Sign-in happens every run.
+      - name: Load saved Wyndham session
         env:
           WYNDHAM_STATE: ${{ secrets.WYNDHAM_STATE }}
         run: |
@@ -61,13 +53,6 @@ jobs:
           path: debug/
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Save refreshed session
-        if: always() && hashFiles('state.json') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: state.json
-          key: wyndham-state-${{ github.run_id }}
 
       - uses: actions/upload-pages-artifact@v3
         with:
