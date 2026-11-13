@@ -127,6 +127,11 @@ class WyndhamClient:
         if not (self.username and self.password):
             raise WyndhamError("Session expired and WYNDHAM_USERNAME / WYNDHAM_PASSWORD are not set.")
         print("Signing in to Club Wyndham...")
+        page.locator("input[name=username]").wait_for(state="visible", timeout=30_000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15_000)
+        except PWError:
+            pass  # analytics scripts can keep the network busy; the form is visible anyway
         page.locator("input[name=username]").fill(self.username)
         page.locator("input[name=password]").fill(self.password)
         page.locator("input[name=password]").press("Enter")
@@ -180,11 +185,24 @@ class WyndhamClient:
     def _open_calendar(self, page: Page, product_id: str):
         # Sessions last about an hour and signed-out owner pages don't always
         # redirect, so start every run at the login page.
-        page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        state = self._wait_state(page, {"login", "signed_in", "mfa", "calendar"}, 60)
-        if state == "login":
-            self._login(page)
-        elif state == "mfa":
+        for attempt in (1, 2):
+            page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            state = self._wait_state(page, {"login", "signed_in", "mfa", "calendar"}, 60)
+            if state != "login":
+                break
+            try:
+                self._login(page)
+                state = "signed_in"
+                break
+            except MfaRequired:
+                raise
+            except WyndhamError as e:
+                # The login form occasionally ignores the submit (a script on the
+                # page errors out). Reload and try once more.
+                if attempt == 2:
+                    raise
+                print(f"Sign-in attempt 1 failed ({e}); retrying...")
+        if state == "mfa":
             self._complete_mfa(page)
             state = self._wait_state(page, {"signed_in", "calendar"}, 90)
         elif state not in ("signed_in", "calendar"):

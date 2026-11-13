@@ -27,8 +27,13 @@ export WYNDHAM_PROFILE="$PWD/.wyndham-profile"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 if ! .venv/bin/python sync.py --out "$OUT/site" "$@"; then
-  notify "Sync failed. Details: $LOG"
-  exit 1
+  echo "Run failed; retrying once in 2 minutes..."
+  sleep 120
+  rm -rf "$OUT/site"
+  if ! .venv/bin/python sync.py --out "$OUT/site" "$@"; then
+    notify "Sync failed. Details: $LOG"
+    exit 1
+  fi
 fi
 
 # Publish: replace the gh-pages branch with this run's feeds (no history kept).
