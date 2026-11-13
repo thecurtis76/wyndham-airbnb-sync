@@ -1,4 +1,5 @@
 state.json
+state.secret
 public/
 *.raw.json
 __pycache__/

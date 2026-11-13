@@ -44,7 +44,7 @@ jobs:
           WYNDHAM_STATE: ${{ secrets.WYNDHAM_STATE }}
         run: |
           if [ -z "$WYNDHAM_STATE" ]; then echo "WYNDHAM_STATE secret missing"; exit 1; fi
-          echo "$WYNDHAM_STATE" | base64 -d > state.json
+          echo "$WYNDHAM_STATE" | base64 -d | gunzip > state.json
 
       - name: Fetch availability and build feeds
         env:

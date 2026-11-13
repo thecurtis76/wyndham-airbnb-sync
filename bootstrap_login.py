@@ -4,9 +4,9 @@
 Opens a visible browser at the Club Wyndham sign-in page. Sign in yourself,
 enter the texted code, and tick "don't ask again" if offered. When you reach
 your owner dashboard, the session (cookies + local storage) is saved to
-state.json. Upload it as the WYNDHAM_STATE secret:
+state.json and packed (trimmed + compressed) into state.secret. Upload it:
 
-    base64 -i state.json | gh secret set WYNDHAM_STATE
+    gh secret set WYNDHAM_STATE < state.secret
 
 Re-run this whenever the cloud job fails with "asked for a verification code".
 """
@@ -23,5 +23,9 @@ with sync_playwright() as p:
     page.wait_for_url("**/owner/**", timeout=10 * 60_000)
     page.wait_for_load_state("networkidle")
     ctx.storage_state(path="state.json")
-    print("Saved state.json. Now run:  base64 -i state.json | gh secret set WYNDHAM_STATE")
     browser.close()
+
+from pack_state import pack  # noqa: E402
+
+pack()
+print("Now run:  gh secret set WYNDHAM_STATE < state.secret")

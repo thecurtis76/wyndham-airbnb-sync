@@ -42,7 +42,12 @@ open/blocked). Because you accept by request, check those when you book.
    python3 -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt && python -m playwright install chromium
    python bootstrap_login.py          # sign in, enter the texted code, tick "don't ask again"
-   base64 -i state.json | gh secret set WYNDHAM_STATE
+   gh secret set WYNDHAM_STATE < state.secret
+   ```
+   `state.secret` is the session trimmed to Wyndham/Okta data and compressed
+   (GitHub secrets max out at 48 KB). To re-pack an existing `state.json`:
+   ```bash
+   python pack_state.py
    ```
 4. **Add the other secrets:**
    ```bash
