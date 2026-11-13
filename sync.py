@@ -2,13 +2,13 @@
 """Fetch Club Wyndham availability and write one Airbnb .ics feed per listing.
 
 Usage:
-  python sync.py --out public                      # live fetch (needs state.json / credentials)
+  python sync.py --out public                      # live fetch (needs credentials)
   python sync.py --out public --from-json data.json  # build from saved data (testing)
   python sync.py --out public --save-json data.json  # also save the raw fetch
 
 Environment:
-  WYNDHAM_USERNAME, WYNDHAM_PASSWORD  used only if the saved session has expired
-  WYNDHAM_STATE_PATH                  saved browser session (default: state.json)
+  WYNDHAM_USERNAME, WYNDHAM_PASSWORD  Club Wyndham sign-in (every run)
+  WYNDHAM_PROFILE                     persistent browser profile (default: .wyndham-profile)
   FEED_TOKEN                          secret path segment for the published feeds
 """
 from __future__ import annotations
@@ -73,11 +73,12 @@ def main():
     else:
         from wyndham_client import WyndhamClient, WyndhamError
         client = WyndhamClient(
-            state_path=os.environ.get("WYNDHAM_STATE_PATH", "state.json"),
+            profile_dir=os.environ.get("WYNDHAM_PROFILE", str(ROOT / ".wyndham-profile")),
             username=os.environ.get("WYNDHAM_USERNAME"),
             password=os.environ.get("WYNDHAM_PASSWORD"),
             consumer_type=cfg.get("consumer_type", "REF|CLUB WYNDHAM PLUS"),
             headless=not args.headed,
+            interactive=sys.stdin.isatty(),
         )
         # Wyndham's window is ~15 months; ask for 16 and let the rest be blocked.
         try:

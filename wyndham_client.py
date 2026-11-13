@@ -1,11 +1,11 @@
 """Fetch per-night suite availability from the Club Wyndham owner site.
 
 How it works (mirrors what the owner website itself does):
-  1. Open a real (headless) Chromium with a saved browser session (cookies +
-     local storage), so Okta's "don't ask again on this device" is honored.
-  2. If the session has expired, sign in with username/password. If Okta
-     then demands a texted verification code, stop with MfaRequired - you
-     re-run bootstrap_login.py on your Mac to refresh the saved session.
+  1. Open full Chromium (headless) with a persistent profile, so Okta's
+     "don't ask again on this device" survives between runs.
+  2. Sign in at the login page every run (owner sessions last ~1 hour).
+     If Okta asks for a texted code and we're in Terminal, send it, prompt
+     for it, and tick "don't ask again"; on a schedule, stop with MfaRequired.
   3. Load a resort's monthly-calendar page and capture the auth headers the
      page attaches to its own availability request.
   4. From inside the page, call the same API the site uses:
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import time
 
 import pathlib
@@ -49,6 +50,15 @@ async ({url, headers, body}) => {
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36")
 
+def _chrome_major(p) -> str:
+    """Chrome major version of Playwright's bundled browser (for a matching user agent)."""
+    b = p.chromium.launch(headless=True, channel="chromium")
+    try:
+        return b.version.split(".")[0]
+    finally:
+        b.close()
+
+
 # Signs that Okta is asking for a second factor (texted code).
 _MFA_SELECTORS = ['input[name="credentials.passcode"]', 'input[name="answer"]', 'input[name="passCode"]',
                   '[data-se="factor-sms"]', '[data-se="phone_number"]', '[data-se="okta_verify-push"]']
@@ -69,12 +79,13 @@ def _windows(start: dt.date, end: dt.date):
 
 
 class WyndhamClient:
-    def __init__(self, state_path: str, username: str | None, password: str | None,
-                 consumer_type: str, headless: bool = True):
-        self.state_path = state_path
+    def __init__(self, profile_dir: str, username: str | None, password: str | None,
+                 consumer_type: str, headless: bool = True, interactive: bool = False):
+        self.profile_dir = profile_dir      # persistent browser profile (keeps Okta's device trust)
         self.username, self.password = username, password
         self.consumer_type = consumer_type
         self.headless = headless
+        self.interactive = interactive      # may prompt for a texted code (first run in Terminal)
         self._headers: dict[str, str] | None = None
         self._party_id: str | None = None
         self._log: list[str] = []
@@ -121,17 +132,48 @@ class WyndhamClient:
         page.wait_for_timeout(3_000)
         state = self._wait_state(page, {"mfa", "error", "calendar", "signed_in"}, 60)
         if state == "mfa":
-            raise MfaRequired(
-                "Club Wyndham asked for a verification code, so this computer/server isn't trusted yet. "
-                "Run bootstrap_login.py on your Mac (tick 'don't ask again'), then "
-                "`gh secret set WYNDHAM_STATE < state.secret`."
-            )
+            self._complete_mfa(page)
+            state = self._wait_state(page, {"error", "calendar", "signed_in"}, 90)
         if state == "error":
             msg = page.locator(".o-form-error-container, .okta-form-infobox-error").first.inner_text()
             raise WyndhamError(f"Sign-in was rejected: {msg.strip()[:200]}")
         if state not in ("calendar", "signed_in"):
             raise WyndhamError(f"Sign-in did not complete (at {page.url}, state={state}).")
         print("Signed in.")
+
+    def _complete_mfa(self, page: Page):
+        """Okta wants a texted code. In Terminal: send it, ask for it, trust this device."""
+        if not self.interactive:
+            raise MfaRequired(
+                "Club Wyndham asked for a verification code. Run ./run_sync.sh once in Terminal; it will "
+                "text you a code, ask you to type it, and remember this device for scheduled runs."
+            )
+        send = page.get_by_role("button", name=re.compile(r"send code", re.I)).or_(
+            page.get_by_role("link", name=re.compile(r"send code", re.I))).or_(
+            page.locator('input[type=submit][value*="code" i]'))
+        if send.count():
+            send.first.click()
+            print("Club Wyndham is texting you a verification code.")
+        box = page.locator(", ".join([
+            'input[name="credentials.passcode"]', 'input[name="answer"]', 'input[name="passCode"]',
+            'form.o-form input[type=text]:visible', 'form.o-form input[type=tel]:visible',
+            'form.o-form input[type=number]:visible'])).first
+        box.wait_for(state="visible", timeout=60_000)
+        code = input("Enter the code from the text message: ").strip()
+        box.fill(code)
+        # Tick "don't ask again on this device" (or similar) if offered.
+        for cb in page.locator("form.o-form input[type=checkbox]").all():
+            try:
+                cb.check(force=True)
+            except PWError:
+                pass
+        verify = page.get_by_role("button", name=re.compile(r"verify|submit|continue|sign in", re.I)).or_(
+            page.locator('form.o-form input[type=submit]'))
+        if verify.count():
+            verify.first.click()
+        else:
+            box.press("Enter")
+        page.wait_for_timeout(3_000)
 
     def _open_calendar(self, page: Page, product_id: str):
         # Sessions last about an hour and signed-out owner pages don't always
@@ -141,7 +183,8 @@ class WyndhamClient:
         if state == "login":
             self._login(page)
         elif state == "mfa":
-            raise MfaRequired("Club Wyndham asked for a verification code before sign-in.")
+            self._complete_mfa(page)
+            state = self._wait_state(page, {"signed_in", "calendar"}, 90)
         elif state not in ("signed_in", "calendar"):
             raise WyndhamError(f"Login page did not load (at {page.url}, state={state}).")
         page.goto(CALENDAR_URL.format(pid=product_id), wait_until="domcontentloaded")
@@ -221,18 +264,16 @@ class WyndhamClient:
         out: dict[str, dict[str, dict[str, int]]] = {}
         with sync_playwright() as p:
             # channel="chromium" = full Chrome in new-headless mode (not the stripped
-            # headless shell), plus a normal user agent: the site's bot protection
-            # stalls pages for "HeadlessChrome".
-            browser = p.chromium.launch(headless=self.headless, channel="chromium",
-                                        args=["--disable-blink-features=AutomationControlled"])
-            major = browser.version.split(".")[0]
-            opts = dict(user_agent=_UA.format(major=major), locale="en-US", timezone_id="America/New_York",
-                        viewport={"width": 1440, "height": 900})
-            if pathlib.Path(self.state_path).exists():
-                opts["storage_state"] = self.state_path
-            ctx = browser.new_context(**opts)
+            # headless shell), with a normal user agent. A persistent profile keeps
+            # Okta's "don't ask again on this device" between runs.
+            major = _chrome_major(p)
+            ctx = p.chromium.launch_persistent_context(
+                self.profile_dir, headless=self.headless, channel="chromium",
+                args=["--disable-blink-features=AutomationControlled"],
+                user_agent=_UA.format(major=major), locale="en-US", timezone_id="America/New_York",
+                viewport={"width": 1440, "height": 900})
             ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            page = ctx.new_page()
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.on("console", lambda m: m.type == "error" and self._log.append(f"console: {m.text[:200]}"))
             page.on("response", lambda r: r.status >= 400 and self._log.append(
                 f"HTTP {r.status} {r.request.method} {r.url.split('?')[0][:150]}"))
@@ -243,8 +284,7 @@ class WyndhamClient:
                 self._capture_headers(page, first_pid)
             except WyndhamError:
                 self._dump(page, "signin-failure")
-                ctx.storage_state(path=self.state_path)
-                browser.close()
+                ctx.close()
                 raise
 
             for key, pid in resorts.items():
@@ -258,6 +298,5 @@ class WyndhamClient:
                     time.sleep(PAUSE_SECONDS)
                 out[key] = nights
 
-            ctx.storage_state(path=self.state_path)   # keep the refreshed session for next run
-            browser.close()
+            ctx.close()
         return out
