@@ -8,6 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PYTHONUNBUFFERED=1   # write log lines as they happen
 
 SERVICE=wyndham-airbnb-sync
 LOG="$HOME/Library/Logs/wyndham-airbnb-sync.log"
